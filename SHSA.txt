@@ -1,0 +1,88 @@
+class SHSA(nn.Module):
+
+    def __init__(
+        self,
+        dim,
+        attn_ratio=0.25,
+        qk_ratio=0.5
+    ):
+        super().__init__()
+
+        self.dim = dim
+
+        self.attn_channels = int(dim * attn_ratio)
+
+        self.qk_dim = int(dim * qk_ratio)
+
+        self.scale = self.qk_dim ** -0.5
+
+        self.pre_norm = nn.GroupNorm(
+            1,
+            self.attn_channels
+        )
+
+        self.qkv = Conv2d_BN(
+            self.attn_channels,
+            self.qk_dim * 2 + self.attn_channels
+        )
+
+        self.proj = nn.Sequential(
+            nn.SiLU(),
+            Conv2d_BN(
+                dim,
+                dim,
+                bn_weight_init=0
+            )
+        )
+
+    def forward(self, x):
+
+        B, C, H, W = x.shape
+
+        attn_feat, bypass_feat = torch.split(
+            x,
+            [self.attn_channels,
+             self.dim-self.attn_channels],
+            dim=1
+        )
+
+        attn_feat = self.pre_norm(attn_feat)
+
+        qkv = self.qkv(attn_feat)
+
+        q, k, v = qkv.split(
+            [
+                self.qk_dim,
+                self.qk_dim,
+                self.attn_channels
+            ],
+            dim=1
+        )
+
+        q = q.flatten(2)
+        k = k.flatten(2)
+        v = v.flatten(2)
+
+        attn = (
+            q.transpose(-2, -1)
+            @ k
+        ) * self.scale
+
+        attn = attn.softmax(dim=-1)
+
+        attn_feat = (
+            v
+            @ attn.transpose(-2, -1)
+        ).reshape(
+            B,
+            self.attn_channels,
+            H,
+            W
+        )
+
+        x = torch.cat(
+            [attn_feat, bypass_feat],
+            dim=1
+        )
+
+        return self.proj(x)
